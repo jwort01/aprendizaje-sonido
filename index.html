@@ -105,6 +105,10 @@ details.crit summary { cursor: pointer; padding: 12px 14px; font: 600 18px var(-
 .status { font-size: 13px; color: var(--muted); min-height: 1.4em; }
 .paste { width: 100%; min-height: 120px; font: 13px var(--mono); background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
 .note { margin: 0; color: var(--muted); font-size: 13px; }
+.send { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lab { font: 600 13px var(--body); color: var(--muted); }
+.field { flex: 1 1 200px; min-width: 0; max-width: 320px; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: 15px var(--body); }
+.btn:disabled { opacity: 0.6; cursor: default; }
 
 @media (max-width: 860px) { .layout { grid-template-columns: minmax(0, 1fr); } .rank { position: static; order: -1; } }
 @media (max-width: 380px) { .row { grid-template-columns: minmax(0, 1fr); gap: 6px; } }
@@ -128,9 +132,14 @@ details.crit summary { cursor: pointer; padding: 12px 14px; font: 600 18px var(-
     <aside class="rank" id="rank" aria-label="Puestos"></aside>
   </div>
 
+  <div class="send">
+    <label class="lab" for="evaluador">Tu nombre</label>
+    <input class="field" id="evaluador" autocomplete="name" placeholder="Quién evalúa">
+    <button class="btn primary" data-act="send" id="sendBtn">Enviar por email</button>
+  </div>
   <div class="actions">
     <button class="btn" data-act="add" id="addBtn">Agregar alumno</button>
-    <button class="btn primary" data-act="copy" id="copyBtn">Copiar para planilla</button>
+    <button class="btn" data-act="copy" id="copyBtn">Copiar para planilla</button>
     <span id="resetSlot"></span>
     <span class="status" id="status" role="status" aria-live="polite"></span>
   </div>
@@ -141,6 +150,9 @@ details.crit summary { cursor: pointer; padding: 12px 14px; font: 600 18px var(-
 <script>
 (function () {
   var KEY = "planilla-sonido-v1";
+  // Clave pública de Web3Forms (web3forms.com). Pegala acá entre las comillas.
+  var ACCESS_KEY = "";
+  var ENDPOINT = "https://api.web3forms.com/submit";
   var LEVELS = ["No lo logra", "Con ayuda", "Solo", "Solo y lo explica"];
   var YEARS = {
     "4to": { label: "4to año", sub: "Monitoreo", items: [
@@ -189,6 +201,7 @@ details.crit summary { cursor: pointer; padding: 12px 14px; font: 600 18px var(-
       });
     });
     if (!YEARS[s.tab]) s.tab = "4to";
+    if (typeof s.evaluador !== "string") s.evaluador = "";
     return s;
   }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
@@ -269,6 +282,39 @@ details.crit summary { cursor: pointer; padding: 12px 14px; font: 600 18px var(-
     } else { showPaste(text); }
   }
 
+  function buildMessage() {
+    var y = YEARS[S.tab], items = y.items, max = items.length * 3, lines = [];
+    lines.push("Evaluación de sonido: " + y.label + " (" + y.sub + ")");
+    lines.push("Evaluador: " + S.evaluador.trim());
+    lines.push("Fecha: " + new Date().toLocaleDateString("es-AR"));
+    lines.push("");
+    lines.push("Escala: 0 no lo logra, 1 con ayuda, 2 solo, 3 solo y lo explica");
+    lines.push("");
+    items.forEach(function (it, i) { lines.push("C" + (i + 1) + ": " + it.t); });
+    lines.push("");
+    S.data[S.tab].forEach(function (st) {
+      lines.push((st.name || "Sin nombre") + ": " + st.scores.map(function (v) { return v == null ? "-" : v; }).join(" | ") + "  =  " + total(st) + "/" + max);
+    });
+    return lines.join("\n");
+  }
+  function doSend() {
+    if (!ACCESS_KEY) { setStatus("Falta configurar la clave de envío."); return; }
+    if (!S.evaluador.trim()) { setStatus("Escribí tu nombre antes de enviar."); $("evaluador").focus(); return; }
+    if (!S.data[S.tab].some(scored)) { setStatus("Cargá al menos un puntaje antes de enviar."); return; }
+    var btn = $("sendBtn"), who = S.evaluador.trim();
+    btn.disabled = true; setStatus("Enviando...");
+    fetch(ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ access_key: ACCESS_KEY, subject: "Evaluación de sonido " + YEARS[S.tab].label + " - " + who, from_name: who, message: buildMessage() })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      btn.disabled = false;
+      setStatus(j && j.success ? "Evaluación enviada." : "No se pudo enviar. Usá Copiar para planilla.");
+    }).catch(function () {
+      btn.disabled = false; setStatus("No se pudo enviar. Usá Copiar para planilla.");
+    });
+  }
+
   document.addEventListener("click", function (e) {
     var b = e.target.closest("[data-act]");
     if (!b) return;
@@ -292,6 +338,7 @@ details.crit summary { cursor: pointer; padding: 12px 14px; font: 600 18px var(-
       else { armed = id; renderCards(); }
     }
     else if (act === "copy") doCopy();
+    else if (act === "send") doSend();
     else if (act === "reset") { resetArmed = true; renderReset(); }
     else if (act === "reset-no") { resetArmed = false; renderReset(); }
     else if (act === "reset-yes") {
@@ -301,11 +348,13 @@ details.crit summary { cursor: pointer; padding: 12px 14px; font: 600 18px var(-
   });
   document.addEventListener("input", function (e) {
     var el = e.target;
+    if (el.id === "evaluador") { S.evaluador = el.value; save(); return; }
     if (!el.classList || !el.classList.contains("name")) return;
     var st = findSt(el.getAttribute("data-id")); if (!st) return;
     st.name = el.value; save(); renderRank();
   });
 
+  $("evaluador").value = S.evaluador;
   renderLegend();
   renderAll();
 })();
